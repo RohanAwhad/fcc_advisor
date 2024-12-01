@@ -24,7 +24,7 @@ services:
       - ./backend:/app
       - tmp_data:/tmp/ 
     depends_on:
-      - postgres
+      - frontend
 
   server:
     image: nginx
@@ -36,5 +36,5 @@ services:
       - frontend
       - backend
 
-volumes
+volumes:
   tmp_data:
