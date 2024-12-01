@@ -1,0 +1,40 @@
+services:
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/eslint.config.js:/app/eslint.config.js
+      - ./frontend/tailwind.config.js:/app/tailwind.config.js
+      - ./frontend/vite.config.js:/app/vite.config.js
+      - ./frontend/postcss.config.js:/app/postcss.config.js
+
+  backend:
+    build: ./backend
+    environment:
+      - WEBPAGE_URL=http://localhost:${PAGE_PORT}
+      - FASTAPI_SESSION_SECRET_KEY=fcc_advisor
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./backend:/app
+      - tmp_data:/tmp/ 
+    depends_on:
+      - postgres
+
+  server:
+    image: nginx
+    volumes:
+      - ./nginx_conf:/etc/nginx/nginx.conf
+    ports:
+      - "${PAGE_PORT}:80"
+    depends_on:
+      - frontend
+      - backend
+
+volumes
+  tmp_data:
