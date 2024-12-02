@@ -8,6 +8,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, JSONResponse
 from typing import Dict, Optional
 from urllib.parse import urlencode
+from chat import chat_with_user
 
 app = FastAPI(root_path='/api/v1')
 
@@ -80,18 +81,15 @@ async def profile(request: Request):
     raise HTTPException(status_code=401, detail="Unauthorized")
   return user
 
-@app.get("/chat")
-async def chat(messages: Dict, request: Request):
+@app.post("/chat")
+async def chat(message: Dict, request: Request):
   user = get_current_user(request)
+  print("user info",user['email'])
   if not user:
     raise HTTPException(status_code=401, detail="Unauthorized")
-  
-  assistant_reply = {"role": "assistant", "content": "Here is a response based on your messages."}
-  videos = [
-    {"yt_link": "https://youtube.com/example1", "title": "Example Video 1", "description": "Description of video 1"},
-    {"yt_link": "https://youtube.com/example2", "title": "Example Video 2", "description": "Description of video 2"},
-  ]
-  return {"reply": assistant_reply, "videos": videos}
+
+  result = await chat_with_user(user['email'], message["message"])
+  return {"reply":result["reply"], "videos":result["videos"]}
 
 @app.post("/library")
 async def add_to_library(video: Dict, request: Request):
