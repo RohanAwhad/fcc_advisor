@@ -6,8 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, JSONResponse
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from urllib.parse import urlencode
+from pydantic import BaseModel, Field
+
+import db
+import utils
 
 app = FastAPI(root_path='/api/v1')
 
@@ -18,6 +22,7 @@ app.add_middleware(
   allow_methods=["GET", "POST", "OPTIONS"],
   allow_headers=["Content-Type", "Authorization"],
 )
+db.check_and_create_tables()
 
 client_id = os.environ["GOOGLE_CLIENT_ID"]
 client_secret = os.environ["GOOGLE_CLIENT_SECRET"]
@@ -57,7 +62,12 @@ async def auth_google_callback(request: Request):
   user_info_response = requests.get(user_info_url, headers=headers)
   user_info = user_info_response.json()
 
+  if not db.check_user_by_email(user_info['email']):
+    # add to db
+    db.create_user(db.User(user_id=user_info['id'], name=user_info['name'], email=user_info['email']))
+
   request.session["user"] = {
+    "user_id": user_info['id'],
     "name": user_info["name"],
     "email": user_info["email"],
     "picture": user_info.get("picture")
@@ -80,8 +90,28 @@ async def profile(request: Request):
     raise HTTPException(status_code=401, detail="Unauthorized")
   return user
 
-@app.get("/chat")
-async def chat(messages: Dict, request: Request):
+
+class Message(BaseModel):
+  role: str = Field(..., desc='user, system, or assistant only')
+  content: str = Field(..., desc='message content')
+
+class VideoIn(BaseModel):
+  video_id: str
+  url: str
+  description: str
+  title: str
+  thumbnail_url: str
+
+class Video(VideoIn):
+  outline: str | None = None
+
+class ChatOut(BaseModel):
+  reply: Message = Field(..., desc='assistant reply')
+  videos: List[Video] = Field(..., desc='video objects')
+
+# TODO: integrate divya's code here
+@app.get("/chat", response_model=ChatOut)
+async def chat(messages: list[Message], request: Request):
   user = get_current_user(request)
   if not user:
     raise HTTPException(status_code=401, detail="Unauthorized")
@@ -93,38 +123,85 @@ async def chat(messages: Dict, request: Request):
   ]
   return {"reply": assistant_reply, "videos": videos}
 
-@app.post("/library")
-async def add_to_library(video: Dict, request: Request):
+
+
+@app.post("/library", status_code=201)
+async def add_to_library(video: VideoIn, request: Request):
+  '''
+  - should add the video to video table
+  - then add the videoid, user id to library table 
+  - add the video_id to worker process for outline and quiz analysis questions
+  '''
   user = get_current_user(request)
   if not user:
     raise HTTPException(status_code=401, detail="Unauthorized")
-  
-  return {"message": "Video added to library", "video": video}
 
-@app.get("/library")
+  # Check if the video already exists in the database
+  existing_video: Optional[db.Video] = db.read_video(video.video_id)
+  # Create the video if it doesn't exist
+  if not existing_video:
+    db.create_video(db.Video(
+      video_id=video.video_id,
+      url=video.url,
+      description=video.description,
+      title=video.title,
+      thumbnail_url=video.thumbnail_url,
+    ))
+
+  db.create_library(db.Library(user['user_id'], video.video_id))
+  # TODO: add the video_id to the worker queue
+
+
+class LibGetOut(BaseModel):
+  response: list[Video]
+@app.get("/library", response_model=LibGetOut)
 async def get_library(request: Request):
+  '''
+  - get list of video objects in the given users library
+  '''
   user = get_current_user(request)
   if not user:
     raise HTTPException(status_code=401, detail="Unauthorized")
-  
-  library = [
-    {"yt_link": "https://youtube.com/example1", "title": "Example Video 1"},
-    {"yt_link": "https://youtube.com/example2", "title": "Example Video 2"},
-  ]
-  return {"videos": library}
 
-@app.get("/watch")
-async def watch(yt_link: str, request: Request):
+  library = db.get_videos_by_user(user['user_id'])
+  return {"response": library}
+
+
+@app.delete("/library/{video_id}", status_code=204)
+async def remove_from_library(video_id: str, request: Request):
+  '''
+  - remove the video from the user's library
+  '''
   user = get_current_user(request)
   if not user:
     raise HTTPException(status_code=401, detail="Unauthorized")
   
+  if not db.check_video_in_library(user['user_id'], video_id):
+    raise HTTPException(status_code=404, detail="Video not found in library")
+  
+  db.delete_library(user['user_id'], video_id)
+  return JSONResponse({'message': 'video successfully removed from user library'}, status_code=204)  # No Content
+
+
+
+class QuizQuestion(BaseModel):
+  question: str
+  answer: str
+
+class VideoDetails(BaseModel):
+  outline: str = Field(..., desc="Outline of the video")
+  quiz: list[QuizQuestion] = Field(..., desc="List of quiz questions and answers")
+
+@app.get("/watch", response_model=VideoDetails)
+async def watch(video_id: str, request: Request):
+  user = get_current_user(request)
+  if not user: raise HTTPException(status_code=401, detail="Unauthorized")
+
+  quizzes = db.read_quizzes_by_video(video_id)
+  video = db.read_video(video_id)
   video_details = {
-    "outline": "# Video Outline\n- Introduction\n- Main Content\n- Summary",
-    "quiz": [
-      {"question": "What is the main topic?", "answer": "The main topic is X."},
-      {"question": "How is it implemented?", "answer": "It is implemented using Y."}
-    ]
+    "outline": video.outline,
+    "quiz": [{"question":q.question, "answer": q.answer} for q in quizzes]
   }
   return video_details
 
