@@ -1,7 +1,6 @@
 services:
   frontend:
     build: ./frontend
-    container_name: frontend
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public

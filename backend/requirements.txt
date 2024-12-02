@@ -4,3 +4,8 @@ pydantic
 requests
 jwt
 itsdangerous
+google-cloud-storage
+google-generativeai
+Jinja2
+pyyaml
+tomlkit
