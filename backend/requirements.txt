@@ -9,3 +9,4 @@ google-generativeai
 Jinja2
 pyyaml
 psycopg2
+google-api-python-client

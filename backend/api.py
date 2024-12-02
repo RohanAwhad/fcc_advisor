@@ -1,6 +1,9 @@
 import os
+import copy
 import requests
 import jwt
+import yaml
+import google.generativeai as genai
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -12,6 +15,8 @@ from pydantic import BaseModel, Field
 
 import db
 import utils
+import structured_llm_output as llm
+import yt_video_recommender
 
 app = FastAPI(root_path='/api/v1')
 
@@ -40,7 +45,7 @@ async def login(request: Request):
     "prompt": "consent"
   }
   auth_url = f"{auth_base_url}?{urlencode(auth_params)}"
-  return RedirectResponse(url=auth_url)
+  return {'auth_url': auth_url}
 
 @app.get("/auth/google/callback")
 async def auth_google_callback(request: Request):
@@ -73,7 +78,7 @@ async def auth_google_callback(request: Request):
     "picture": user_info.get("picture")
   }
 
-  return RedirectResponse(url="/api/v1/profile")
+  return RedirectResponse(url="/")
 
 @app.get("/logout")
 async def logout(request: Request):
@@ -109,19 +114,42 @@ class ChatOut(BaseModel):
   reply: Message = Field(..., desc='assistant reply')
   videos: List[Video] = Field(..., desc='video objects')
 
-# TODO: integrate divya's code here
-@app.get("/chat", response_model=ChatOut)
+@app.post("/recommend_videos", response_model=ChatOut)
 async def chat(messages: list[Message], request: Request):
+  '''
+  - based on latest messages generate search query 
+  - get a list of videos that would are related to the chat
+  - add title and description at the end of the messages to as context
+  - now with the new messages list generate an assistant reply
+  '''
+  with open('prompts/recommend_videos_chat.txt', 'r') as f:
+    chat_sys_prompt = f.read()
+  with open('prompts/recommend_videos_keyword_gen.txt', 'r') as f:
+    keyword_gen_sys_prompt = f.read()
+
   user = get_current_user(request)
   if not user:
     raise HTTPException(status_code=401, detail="Unauthorized")
-  
-  assistant_reply = {"role": "assistant", "content": "Here is a response based on your messages."}
-  videos = [
-    {"yt_link": "https://youtube.com/example1", "title": "Example Video 1", "description": "Description of video 1"},
-    {"yt_link": "https://youtube.com/example2", "title": "Example Video 2", "description": "Description of video 2"},
-  ]
-  return {"reply": assistant_reply, "videos": videos}
+
+  class SearchQuery(BaseModel):
+    scratch_pad: str = Field(desc='a scratchpad for you to layout your thoughts, before writing down the query')
+    query: str = Field(desc='search query 3-8 words')
+
+  res = llm.run('gemini-1.5-flash', messages=copy.deepcopy([Message(role='system', content=keyword_gen_sys_prompt),] + messages), response_model=SearchQuery, provider='google', max_retries=3)
+  videos_list = await yt_video_recommender.search_youtube_videos(res.query)
+  print(videos_list)
+  videos_list = [VideoIn.model_validate(x) for x in videos_list]
+  recommended_yt_videos = yaml.safe_dump([{'title': x.title, 'description': x.description} for x in videos_list])
+  messages[-1].content += f'\n\nRecommended Youtube Videos:\n```yaml\n{recommended_yt_videos}\n```'
+
+  final_message = [f'{m.role.lower()}:\n{m.content}\n\n---\n' for m in [Message(role='system', content=chat_sys_prompt),]+messages] + ['assitant:',]
+  final_message = ''.join(final_message)
+  model = genai.GenerativeModel(model_name='gemini-1.5-flash')
+  response = model.generate_content([final_message,], request_options={"timeout": 600})
+  llm_res = response.text
+
+  assistant_reply = {"role": "assistant", "content": llm_res}
+  return {"reply": assistant_reply, "videos": videos_list}
 
 
 
